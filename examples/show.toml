@@ -1,0 +1,25 @@
+# trackfix - one file per show.
+#
+# The reference is the night you will mix.  Every other night you recorded goes in an
+# [[other]] block: the playback machine plays the same files each night, so the other
+# nights are what the repairs come from.  More nights, more chances of a clean copy.
+#
+# Mono left/right files, as a multitrack recorder writes them, or one stereo file.
+
+[reference]
+left  = "E:/My Show/Audio/Tracks L.wav"
+right = "E:/My Show/Audio/Tracks R.wav"
+# stereo = "E:/My Show/Audio/Tracks.wav"
+
+[[other]]
+name  = "second night"
+left  = "E:/My Show/Second Night Audio/Tracks L-1.wav"
+right = "E:/My Show/Second Night Audio/Tracks R-1.wav"
+
+# [[other]]
+# name  = "third night"
+# left  = "..."
+# right = "..."
+
+[output]
+dir = "E:/My Show/Audio/trackfix"      # repaired files and reports go here
