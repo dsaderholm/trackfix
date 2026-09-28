@@ -41,12 +41,19 @@ def cmd_repair(ref, others, out, a):
     json.dump(notes, open(rj, "w"), indent=1)
     done = [n for n in notes if n["status"] == "repaired"]
     left = [n for n in notes if n["status"].startswith("LEFT")]
+    maybe = [n for n in notes if "probably the music" in n["status"]]
     with open(rm, "w", encoding="utf-8") as f:
         f.write(f"# trackfix repairs\n\n{len(done)} repaired, {len(left)} left for checking by ear.\n\n")
         f.write("Times are from the start of the reference recording.\n\n")
         if left:
             f.write("## Check these by ear\n\n")
             for n in left: f.write(f"- {tc(n['t'])}  ({n['ms']:.1f} ms {n['kind']})\n")
+            f.write("\n")
+        if maybe:
+            f.write("## Left alone - probably the music\n\nDeep dips with only part of the soft-mute's "
+                    "shape and no clean copy to compare. On the show this was built on, every one "
+                    "checked by ear was the arrangement. Listen if in doubt.\n\n")
+            for n in maybe: f.write(f"- {tc(n['t'])}\n")
             f.write("\n")
         f.write("## Repaired\n\n| time | span | source | fit |\n|---|---|---|---|\n")
         for n in done:
@@ -62,13 +69,23 @@ def cmd_verify(ref, others, out, a):
     sp, pl, pr, rj, rm, vj = paths(out)
     fixed = Night(left=pl, right=pr, name="repaired")
     ev = scan_mod.scan(fixed, others, vj, start=a.start or 0.0, end=a.end)
+    # the shape search on each channel alone as well
+    for ch in (0, 1):
+        dur = fixed.duration(); t0 = a.start or 0.0; t1 = a.end or dur
+        while t0 < t1:
+            d = min(60.0, t1 - t0); X = fixed.read(t0, d); X = np.stack([X[ch], X[ch]])
+            for h in scan_mod.shape_hits(X):
+                t = t0 + h / SR - 0.0065
+                if not any(abs(v["t"] - t) < 0.02 for v in ev if v.get("source") == "shape"):
+                    ev.append({"who": "reference", "kind": "dip", "source": "shape", "ch": "LR"[ch], "t": t, "ms": 8.0})
+            t0 += d
     # what is left that still looks like a soft-mute - found by shape, or flagged against
     # another night and soft-mute shaped.  Gaps between notes do not count.
     real = []
     for e in ev:
         if e["who"] != "reference" or e["kind"] != "dip" or e["ms"] > 40: continue
         X = fixed.read(e["t"] - 0.05, 0.1 + e["ms"] / 1000)
-        r, d = repair_mod.soft_mute_shape(X, int(0.05 * SR), e["ms"])
+        r, d = repair_mod.soft_mute_shape(repair_mod.view(X, e), int(0.05 * SR), e["ms"])
         if e.get("source") == "shape" or (r >= 0.8 and d <= -20): real.append(e)
     print(f"\nverify: {len(real)} soft-mute dips still present in the repaired recording")
     for e in real: print(f"   {tc(e['t'])}  {e['ms']:.1f} ms")

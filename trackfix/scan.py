@@ -47,8 +47,10 @@ _TZ, _BOT = _TQ - _TQ.mean(), int(np.argmin(_TQ))
 def shape_hits(X, r_min=0.85, depth_max=-20, floor=-70):
     """Soft-mute dips found from their shape alone - no other night needed.  Validated on
     the show this was built on: 44 of 55 known dips, and no false alarms across nine
-    cues, including a percussive number full of note gaps as deep as the dips.  Returns
-    sample indices of each dip's bottom."""
+    cues, including a percussive number full of note gaps as deep as the dips.  Over all
+    38 cues it raised one: a percussive gap in the arrangement itself, identical on both
+    nights - which is why repair checks the other nights before acting on a shape hit.
+    Returns sample indices of each dip's bottom."""
     st = 12; m = X.shape[1] // st * st; n = len(_TQ)
     env = 10 * np.log10((X[:, :m] ** 2).mean(0).reshape(-1, st).mean(1) + 1e-20)
     if len(env) <= n: return []
@@ -78,6 +80,16 @@ def compare(X, Z):
         for g in runs(idx, 4):
             ev.append({"who": who, "kind": "dip", "i": int(g[0] * W), "ms": (g[-1] - g[0] + 1) * W / SR * 1000,
                        "depth": float((lo - hi)[g].min())})
+    # per channel too: a dip in one channel only lowers left+right together by ~3 dB and
+    # never reaches -12 - on the show this was built on, most of one song's dips were
+    # right-channel only, found by eye
+    for c in (0, 1):
+        c1 = 10 * np.log10((X[c, :m] ** 2).reshape(-1, W).mean(1) + 1e-20)
+        c2 = 10 * np.log10((Z[c, :m] ** 2).reshape(-1, W).mean(1) + 1e-20)
+        for who, lo, hi, med in (("reference", c1, c2, np.median(c2)), ("other", c2, c1, np.median(c1))):
+            for g in runs(np.flatnonzero((lo - hi < DROP_DB) & (hi > med + PRESENT_DB)), 4):
+                ev.append({"who": who, "kind": "dip", "ch": "LR"[c], "i": int(g[0] * W),
+                           "ms": (g[-1] - g[0] + 1) * W / SR * 1000, "depth": float((lo - hi)[g].min())})
     st = 12; k = X.shape[1] // st
     Xs, Zs = X[:, :k * st].reshape(2, k, st), Z[:, :k * st].reshape(2, k, st)
     ex, ez, er = (Xs ** 2).sum((0, 2)), (Zs ** 2).sum((0, 2)), ((Xs - Zs) ** 2).sum((0, 2))
@@ -147,14 +159,18 @@ def scan(ref, others, out_path, start=0.0, end=None, log=print):
                 off = off + (lag - SEARCH * SR) / SR
                 b = e
         # soft-mutes found by shape alone - catches dips where no other night lines up
-        for h in shape_hits(X):
-            t = c0 + h / SR
-            if not (c0 <= t < c0 + d): continue
-            if any(v["who"] == "reference" and v["kind"] == "dip" and abs(v["t"] - (t - 0.0065)) < 0.02 for v in events):
-                continue
-            blk = [a for a in aligned if a[0] - 0.5 <= t <= a[1] + 0.5]
-            events.append({"who": "reference", "kind": "dip", "source": "shape", "t": t - 0.0065, "ms": 8.0,
-                           "other": blk[0][2] if blk else None, "offset": blk[0][3] if blk else None, "null": None})
+        for ch in (None, 0, 1):                              # both channels together, then each alone
+            Xc = X if ch is None else np.stack([X[ch], X[ch]])
+            for h in shape_hits(Xc):
+                t = c0 + h / SR
+                if not (c0 <= t < c0 + d): continue
+                if any(v["who"] == "reference" and v["kind"] == "dip" and abs(v["t"] - (t - 0.0065)) < 0.02 for v in events):
+                    continue
+                blk = [a for a in aligned if a[0] - 0.5 <= t <= a[1] + 0.5]
+                ev = {"who": "reference", "kind": "dip", "source": "shape", "t": t - 0.0065, "ms": 8.0,
+                      "other": blk[0][2] if blk else None, "offset": blk[0][3] if blk else None, "null": None}
+                if ch is not None: ev["ch"] = "LR"[ch]
+                events.append(ev)
         mine = sum(1 for v in events if v["who"] == "reference")
         log(f"  {c0/60:6.1f} min   reference glitches so far {mine:>4}   blocks {stats['blocks']}"
             f"   music not found in another night {stats['unaligned_music']}")

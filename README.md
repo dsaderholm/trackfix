@@ -12,9 +12,11 @@ trackfix finds every such spot in the night you are going to mix, repairs it fro
 other nights, and writes a repaired recording that is **bit-identical everywhere else** -
 same length, same format, a drop-in for the original.
 
-Built after a school production where the QLab playback machine soft-muted the tracks
-for ~15 ms roughly once a minute, on every night, at random. Inaudible in the room;
-obvious on a good car stereo.
+Built after a school production where the backing tracks were soft-muted for ~15 ms
+roughly once a minute, on every night, at random - often in one channel only. Inaudible
+in the room; obvious on a good car stereo. The PA carried them too, so it happened
+before the desk split the signal: the playback computer's output or the desk's input
+(which one is still being tested).
 
 ## Use it the day after the show
 
@@ -50,6 +52,9 @@ hour for `verify`. Windows, Python 3.11+, numpy, and ffmpeg on the PATH.
   broadband match by exactly one cycle
 - level-matches per block and per channel, so a different recording gain or a fader
   ride on either night cannot matter
+- checks **each channel on its own** as well as both together: a dip in one channel
+  lowers the pair by only ~3 dB, and on the show this was built on many dips were in
+  the right channel alone
 - flags level dips (0.5 ms windows, one night >12 dB under the other) and waveform
   departures (0.25 ms steps where the recordings stop matching)
 - **also searches for the soft-mute's shape directly** in the reference, needing no other
@@ -62,8 +67,8 @@ hour for `verify`. Windows, Python 3.11+, numpy, and ffmpeg on the PATH.
 
 1. **the other night at the same spot** - widened to cover the whole disturbance (a flag
    can be a sliver of a 15 ms glitch), level-matched to the 60 ms either side,
-   crossfaded over 1.5 ms. Refused unless it fits the music on both sides to -12 dB or
-   better and the other night is not damaged there itself
+   crossfaded over 1.5 ms. Refused unless it fits the music on both sides to -18 dB or
+   better, in each channel, and the other night is not damaged there itself
 2. **another copy of the same music** anywhere in any night (scene-change music gets
    reused), both sides lining up with identical timing
 3. **turning the dip back up** - playback soft-mutes turn the music down without stopping
@@ -71,19 +76,23 @@ hour for `verify`. Windows, Python 3.11+, numpy, and ffmpeg on the PATH.
    where the reference's own level has **that shape** - a slow ~11 ms slide down and a
    fast snap back, at least 20 dB deep - and only if the level comes out smooth. A gap
    between notes can dip just as deep; "turning it back up" would fill it in and flatten
-   the rhythm, so shape, not depth, is the test
+   the rhythm, so shape, not depth, is the test. Only the channel that dipped is touched
 
 Nothing is inserted or removed. On the show this was built for, timing either side of
 every glitch was unchanged to a hundredth of a sample.
 
-**verify** - scans the repaired recording against the other nights the same way and
-lists anything that still dips.
+**verify** - scans the repaired recording against the other nights the same way, runs
+the shape search on each channel alone, and lists anything that still dips.
 
 ## What it cannot do
 
 - **One night only.** It still runs: soft-mutes are found by their shape and turned
   back up. But garbled stretches can't be found without a second night to compare
-  against, and nothing can be patched from real audio. Record every night.
+  against, nothing can be patched from real audio, and a gap in the arrangement that
+  happens to have the soft-mute's shape can't be told apart from a glitch - with other
+  nights, a dip every night shares is left alone as part of the music. That happened
+  once in 38 cues on the show this was built on. Record every night; three is better
+  than two, because when two nights disagree the third says which one is damaged.
 - **A glitch at the same moment on every night** - that is in the file, not the playback.
   Never seen, but it would be reported as nothing.
 - **Different audio each night** - pre-show house music, a re-exported cue, a different

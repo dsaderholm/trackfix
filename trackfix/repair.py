@@ -6,7 +6,7 @@ For each glitch the scan found in the reference night, in order of preference:
   1. THE OTHER NIGHT AT THE SAME SPOT.  Aligned there on the high frequencies to a
      fraction of a sample, widened to cover the whole disturbance (a flag can be a sliver
      of a longer one), level-matched per channel to the 60 ms either side, crossfaded
-     over 1.5 ms.  Refused unless it fits the music on both sides to -12 dB or better
+     over 1.5 ms.  Refused unless it fits the music on both sides to -18 dB or better
      and is not dipping itself.
   2. ANOTHER COPY OF THE SAME MUSIC anywhere in any night (scene-change music gets
      reused).  Both sides must line up, with identical timing.  Same tests.
@@ -70,6 +70,17 @@ def disturbance(X, x0, A, B, other, o):
     return (nA, nB) if nB - nA <= int(0.045 * SR) else (A, B)
 
 
+def rows(e):
+    """Channels an event concerns: one, if the scan flagged it in one channel only."""
+    return ["LR".index(e["ch"])] if e.get("ch") else [0, 1]
+
+
+def view(X, e):
+    """X as the level tests should see it - that channel alone doubled up, or both."""
+    r = rows(e)
+    return X if len(r) == 2 else np.stack([X[r[0]], X[r[0]]])
+
+
 def place(Y, X, z, A, B):
     """z covers [A-M, B+M).  Level-match on the anchors, check, crossfade [A, B) into Y.
     Returns (ok, fit_db)."""
@@ -77,11 +88,17 @@ def place(Y, X, z, A, B):
     zz = np.concatenate([z[:, :M], z[:, -M:]], 1)
     g = [np.dot(ref[c], zz[c]) / (np.dot(zz[c], zz[c]) + 1e-20) for c in (0, 1)]
     z = np.stack([g[0] * z[0], g[1] * z[1]]); zz = np.concatenate([z[:, :M], z[:, -M:]], 1)
-    fit = 10 * np.log10(((ref - zz) ** 2).mean() / ((ref ** 2).mean() + 1e-20) + 1e-20)
     core = z[:, M:-M]; inner = core[:, M // 2:-M // 2] if core.shape[1] > M else core
-    # -18 dB: every healthy copy on the show this was built on fitted at -18 or better;
-    # the one at -12 came from a night whose playback was itself badly glitched.
-    if fit > -18 or 10 * np.log10((inner ** 2).mean() + 1e-20) < 10 * np.log10((zz ** 2).mean() + 1e-20) - 12:
+    # Judged per channel - left+right together can fit well while one channel of the copy
+    # is itself dead, and the patch would carry the dead channel across.  -18 dB: every
+    # healthy copy on the show this was built on fitted at -18 or better.
+    fits, sick = [], False
+    for c in (0, 1):
+        if 10 * np.log10((ref[c] ** 2).mean() + 1e-20) < -70: continue
+        fits.append(10 * np.log10(((ref[c] - zz[c]) ** 2).mean() / ((ref[c] ** 2).mean() + 1e-20) + 1e-20))
+        if 10 * np.log10((inner[c] ** 2).mean() + 1e-20) < 10 * np.log10((zz[c] ** 2).mean() + 1e-20) - 12: sick = True
+    fit = max(fits) if fits else 0.0
+    if fit > -18 or sick:
         return False, fit
     x = int(XF * SR); w = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, x))
     mix = np.ones(B - A); mix[:x] = w; mix[-x:] = w[::-1]
@@ -102,11 +119,15 @@ def real_dip(X, i, ms):
     return env is not None and (env[11:-11].min() - fl) <= -8
 
 
-def smooth(X, i, ms):
+def smooth(X, i, ms, top=6):
+    """No dip left below -10 dB and no bump above `top` dB against the flanks.  One channel
+    alone is jumpier at 1 ms than both together, so single-channel repairs get +8: a real
+    right-channel dip came back at +6.3 and was refused at +6.  Overcorrections - the thing
+    this exists to catch - came in at +10 and +28."""
     env, fl = envelope_ms(X, i, ms)
     if env is None: return False
     inner = env[13:-13]
-    return (inner.min() - fl) > -10 and (inner.max() - fl) < 6
+    return (inner.min() - fl) > -10 and (inner.max() - fl) < top
 
 
 _TQ = np.array([TEMPLATE[i:i + 12].mean() for i in range(0, len(TEMPLATE) - 12, 12)])   # 0.25 ms steps
@@ -134,26 +155,30 @@ def gain_curve(n, pos, scale):
     return 10 ** (np.interp(idx, np.arange(len(TEMPLATE)), TEMPLATE, left=0.0, right=0.0) * scale / 20)
 
 
-def unduck(Y, i, ms):
-    """Fit the soft-mute template around sample i of Y and divide it out, in place.
-    Tries a focused fit, then a wide one; keeps it only if the level comes out smooth."""
+def unduck(Y, i, ms, R=(0, 1)):
+    """Fit the soft-mute template around sample i and divide it out of channels R of Y, in
+    place.  Tries a focused fit, then a wide one; keeps it only if the level comes out
+    smooth.  A dip in one channel is judged and repaired in that channel alone."""
+    R = list(R)
     a0, b0 = i - int(0.030 * SR), i + int(0.040 * SR)
     if a0 < 0 or b0 > Y.shape[1]: return None
     x = Y[:, a0:b0].copy()
+    V = (lambda: Y) if len(R) == 2 else (lambda: np.stack([Y[R[0]], Y[R[0]]]))
     guess = (i - a0) + (ms / 1000 - 0.002) * SR
     for positions, scales in ((np.arange(guess - 0.004 * SR, guess + 0.004 * SR, 2.0), np.linspace(0.4, 1.4, 26)),
                               (np.arange(0.018 * SR, 0.044 * SR, 12), np.linspace(0.2, 1.2, 21))):
         best = None
         for pos in positions:
             for sc in scales:
-                Y[:, a0:b0] = x / gain_curve(x.shape[1], pos, sc)
-                env, fl = envelope_ms(Y, i, ms)
+                Y[R, a0:b0] = x[R] / gain_curve(x.shape[1], pos, sc)
+                env, fl = envelope_ms(V(), i, ms)
                 if env is None: continue
                 inner = env[11:-11]; d = max(inner.max() - fl, fl - inner.min())
                 if best is None or d < best[0]: best = (d, pos, sc)
         if best is None: continue
-        Y[:, a0:b0] = x / gain_curve(x.shape[1], best[1], best[2])
-        if smooth(Y, i, ms): return {"bottom_s": (a0 + best[1]) / SR, "depth_scale": float(best[2])}
+        Y[R, a0:b0] = x[R] / gain_curve(x.shape[1], best[1], best[2])
+        if smooth(V(), i, ms, top=6 if len(R) == 2 else 8): return {"bottom_s": (a0 + best[1]) / SR, "depth_scale": float(best[2]),
+                                       "channels": "".join("LR"[r] for r in R)}
     Y[:, a0:b0] = x
     return None
 
@@ -184,8 +209,17 @@ def repair(ref, others, scan_path, out_left, out_right, log=print):
         for e in evs:
             i = int(round(e["t"] * SR)) - x0
             if not (lo <= i < hi): continue
-            if any(n["status"] == "repaired" and n["from_s"] - 0.001 <= e["t"] <= n["to_s"] + 0.001 for n in notes):
-                continue
+            mine = set(rows(e))
+            # channels an earlier repair already covered here.  Turning up the right channel
+            # alone must not mark the left as done, and a stereo flag at the same spot must then
+            # work on the left alone: judged on both together, the fixed right hides the left's dip.
+            covered = set()
+            for n in notes:
+                if n["status"] == "repaired" and n.get("from_s", 1e9) - 0.001 <= e["t"] <= n.get("to_s", -1) + 0.001:
+                    covered |= {"LR".index(c) for c in n.get("channels", "LR")}
+            if mine <= covered: continue
+            if covered:
+                e = dict(e, ch="LR"[(mine - covered).pop()]); mine = set(rows(e))
             note = {"t": e["t"], "kind": e["kind"], "ms": e["ms"]}
             if e["ms"] > 40:
                 notes.append({**note, "status": "edge - the nights differ here, not a glitch"}); continue
@@ -198,6 +232,17 @@ def repair(ref, others, scan_path, out_left, out_right, log=print):
                 other = others[e["other"]]
                 ob = local_offset(X, x0, a - int(0.26 * SR), a - int(0.01 * SR), other, e["offset"])
                 oa = local_offset(X, x0, b + int(0.01 * SR), b + int(0.26 * SR), other, e["offset"])
+                if e.get("source") == "shape" and ob is not None:
+                    # Found by shape alone: if the other night dips identically here, it is
+                    # in the file - the music - not a glitch.  (Seen once: a percussive
+                    # gap with the soft-mute's shape, identical on both nights to -39 dB.)
+                    z = aligned(other, x0 + a - 1440, x0 + b + 1440, ob)
+                    if z is not None:
+                        xx = X[:, a - 1440:b + 1440]; L = xx.shape[1]; ed = np.r_[0:240, L - 240:L]
+                        z = z * (np.dot(xx[:, ed].ravel(), z[:, ed].ravel()) / (np.dot(z[:, ed].ravel(), z[:, ed].ravel()) + 1e-20))
+                        if 10 * np.log10(((xx - z) ** 2).mean() / ((xx ** 2).mean() + 1e-20) + 1e-20) < -25:
+                            notes.append({**note, "status": "edge - every night has this dip (it is in the music)"})
+                            continue
             damaged = any(t["other"] == e.get("other") and abs(t["t"] - e["t"]) < 0.010 for t in theirs)
             if (ob is not None or oa is not None) and not damaged and (ob is None or oa is None or abs(ob - oa) < 2):
                 o = float(np.mean([v for v in (ob, oa) if v is not None]))
@@ -229,16 +274,19 @@ def repair(ref, others, scan_path, out_left, out_right, log=print):
                                           "from_s": (x0 + A) / SR, "to_s": (x0 + B) / SR}); done = True; break
                     if done: break
             if not done:
-                shape_r, depth = soft_mute_shape(X, i, e["ms"])
+                shape_r, depth = soft_mute_shape(view(X, e), i, e["ms"])
                 if depth <= -20 and 0.6 <= shape_r < 0.8:
-                    notes.append({**note, "status": "LEFT AS IS - check by ear (deep, partly soft-mute shaped)",
+                    # Deep but only partly soft-mute shaped, and no clean copy anywhere.  On
+                    # the show this was built on, all nine such spots were checked by ear and
+                    # were the arrangement's own staccato - so these are listed, not queried.
+                    notes.append({**note, "status": "edge - partly soft-mute shaped, probably the music",
                                   "shape_r": shape_r, "depth": depth})
                     continue
                 if shape_r < 0.8 or depth > -20:
                     notes.append({**note, "status": "edge - not a soft-mute in this night (the other night differs)",
                                   "shape_r": shape_r, "depth": depth})
                     continue
-                res = unduck(Y, i, e["ms"])
+                res = unduck(Y, i, e["ms"], rows(e))
                 if res:
                     notes.append({**note, "status": "repaired", "source": "own audio turned back up (soft-mute template)",
                                   "from_s": e["t"] - 0.03, "to_s": e["t"] + 0.04, **res}); done = True
