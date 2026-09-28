@@ -79,7 +79,9 @@ def place(Y, X, z, A, B):
     z = np.stack([g[0] * z[0], g[1] * z[1]]); zz = np.concatenate([z[:, :M], z[:, -M:]], 1)
     fit = 10 * np.log10(((ref - zz) ** 2).mean() / ((ref ** 2).mean() + 1e-20) + 1e-20)
     core = z[:, M:-M]; inner = core[:, M // 2:-M // 2] if core.shape[1] > M else core
-    if fit > -12 or 10 * np.log10((inner ** 2).mean() + 1e-20) < 10 * np.log10((zz ** 2).mean() + 1e-20) - 12:
+    # -18 dB: every healthy copy on the show this was built on fitted at -18 or better;
+    # the one at -12 came from a night whose playback was itself badly glitched.
+    if fit > -18 or 10 * np.log10((inner ** 2).mean() + 1e-20) < 10 * np.log10((zz ** 2).mean() + 1e-20) - 12:
         return False, fit
     x = int(XF * SR); w = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, x))
     mix = np.ones(B - A); mix[:x] = w; mix[-x:] = w[::-1]
@@ -105,6 +107,26 @@ def smooth(X, i, ms):
     if env is None: return False
     inner = env[13:-13]
     return (inner.min() - fl) > -10 and (inner.max() - fl) < 6
+
+
+_TQ = np.array([TEMPLATE[i:i + 12].mean() for i in range(0, len(TEMPLATE) - 12, 12)])   # 0.25 ms steps
+
+
+def soft_mute_shape(X, i, ms):
+    """(shape r, depth dB) of this night's own 0.25 ms level against the dip template,
+    sliding over +/-30 ms.  A gap between notes can dip as deep as a soft-mute; only the
+    soft-mute has this asymmetric shape (a slow ~11 ms slide down, a fast snap back).
+    Turning a gap between notes 'back up' fills it in and flattens the rhythm - on the
+    show this was built on, a percussive number would have lost 58 of its gaps."""
+    c = i + int(ms / 2000 * SR)
+    s = X[:, max(0, c - int(0.030 * SR)):c + int(0.030 * SR)]; m = s.shape[1] // 12 * 12
+    env = 10 * np.log10((s[:, :m] ** 2).mean(0).reshape(-1, 12).mean(1) + 1e-20)
+    best = (-1.0, 0.0)
+    for k in range(0, len(env) - len(_TQ)):
+        seg = env[k:k + len(_TQ)]
+        r = float(np.corrcoef(seg, _TQ)[0, 1])
+        if r > best[0]: best = (r, float(seg.min() - np.median(np.r_[seg[:8], seg[-8:]])))
+    return best
 
 
 def gain_curve(n, pos, scale):
@@ -170,11 +192,13 @@ def repair(ref, others, scan_path, out_left, out_right, log=print):
             a, b = i - int(PAD * SR), i + int((e["ms"] / 1000 + PAD) * SR)
             if a - M - int(0.3 * SR) < 0 or b + M + int(0.3 * SR) > X.shape[1]:
                 notes.append({**note, "status": "LEFT AS IS - too close to the recording's edge"}); continue
-            other = others[e["other"]]
-            ob = local_offset(X, x0, a - int(0.26 * SR), a - int(0.01 * SR), other, e["offset"])
-            oa = local_offset(X, x0, b + int(0.01 * SR), b + int(0.26 * SR), other, e["offset"])
             done = False
-            damaged = any(t["other"] == e["other"] and abs(t["t"] - e["t"]) < 0.010 for t in theirs)
+            ob = oa = None
+            if e.get("other") is not None:
+                other = others[e["other"]]
+                ob = local_offset(X, x0, a - int(0.26 * SR), a - int(0.01 * SR), other, e["offset"])
+                oa = local_offset(X, x0, b + int(0.01 * SR), b + int(0.26 * SR), other, e["offset"])
+            damaged = any(t["other"] == e.get("other") and abs(t["t"] - e["t"]) < 0.010 for t in theirs)
             if (ob is not None or oa is not None) and not damaged and (ob is None or oa is None or abs(ob - oa) < 2):
                 o = float(np.mean([v for v in (ob, oa) if v is not None]))
                 A, B = disturbance(X, x0, a, b, other, o)
@@ -205,8 +229,14 @@ def repair(ref, others, scan_path, out_left, out_right, log=print):
                                           "from_s": (x0 + A) / SR, "to_s": (x0 + B) / SR}); done = True; break
                     if done: break
             if not done:
-                if not real_dip(X, i, e["ms"]):
-                    notes.append({**note, "status": "edge - no dip in this night's own level (the other night differs)"})
+                shape_r, depth = soft_mute_shape(X, i, e["ms"])
+                if depth <= -20 and 0.6 <= shape_r < 0.8:
+                    notes.append({**note, "status": "LEFT AS IS - check by ear (deep, partly soft-mute shaped)",
+                                  "shape_r": shape_r, "depth": depth})
+                    continue
+                if shape_r < 0.8 or depth > -20:
+                    notes.append({**note, "status": "edge - not a soft-mute in this night (the other night differs)",
+                                  "shape_r": shape_r, "depth": depth})
                     continue
                 res = unduck(Y, i, e["ms"])
                 if res:

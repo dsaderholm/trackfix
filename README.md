@@ -30,7 +30,8 @@ Before cutting cues or mixing anything:
 
    `all` = `scan`, then `repair`, then `verify`. Each can be run on its own.
 3. Read `repairs.md` in the output folder. It lists every repair with its time and
-   where the audio came from, and anything left for you to check by ear.
+   where the audio came from, and anything left for you to check by ear - spots that dip
+   deep and look partly like a soft-mute, where it would rather ask than guess.
 4. Cut your cues from `Tracks L (repaired).wav` / `Tracks R (repaired).wav`, not from
    the originals. Keep the originals.
 
@@ -51,6 +52,11 @@ hour for `verify`. Windows, Python 3.11+, numpy, and ffmpeg on the PATH.
   ride on either night cannot matter
 - flags level dips (0.5 ms windows, one night >12 dB under the other) and waveform
   departures (0.25 ms steps where the recordings stop matching)
+- **also searches for the soft-mute's shape directly** in the reference, needing no other
+  night: a slow ~11 ms slide down and a fast snap back. On the show this was built on it
+  found 44 of 55 known dips with no false alarms, including in a percussive number whose
+  gaps between notes dip just as deep. It catches dips where no other night lines up;
+  the night-to-night comparison catches the ones that land on a note attack
 
 **repair** - each dip in the reference, in order of preference:
 
@@ -62,8 +68,10 @@ hour for `verify`. Windows, Python 3.11+, numpy, and ffmpeg on the PATH.
    reused), both sides lining up with identical timing
 3. **turning the dip back up** - playback soft-mutes turn the music down without stopping
    it, by the same curve every time (`dip_template.npy`, measured on 48 of them). Only
-   where the reference really dips in its own level, and only if the level comes out
-   smooth; otherwise the spot is left alone and listed
+   where the reference's own level has **that shape** - a slow ~11 ms slide down and a
+   fast snap back, at least 20 dB deep - and only if the level comes out smooth. A gap
+   between notes can dip just as deep; "turning it back up" would fill it in and flatten
+   the rhythm, so shape, not depth, is the test
 
 Nothing is inserted or removed. On the show this was built for, timing either side of
 every glitch was unchanged to a hundredth of a sample.
@@ -73,9 +81,9 @@ lists anything that still dips.
 
 ## What it cannot do
 
-- **One night only.** With nothing to compare against there is no ground truth; the only
-  tool left is turning soft-mute dips back up, and without a reference nothing proves
-  a dip is a glitch rather than the music.
+- **One night only.** It still runs: soft-mutes are found by their shape and turned
+  back up. But garbled stretches can't be found without a second night to compare
+  against, and nothing can be patched from real audio. Record every night.
 - **A glitch at the same moment on every night** - that is in the file, not the playback.
   Never seen, but it would be reported as nothing.
 - **Different audio each night** - pre-show house music, a re-exported cue, a different

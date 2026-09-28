@@ -11,7 +11,9 @@ def load(path):
         return Night(left=d.get("left"), right=d.get("right"), stereo=d.get("stereo"), name=d.get("name", name))
     ref = night(cfg["reference"], "reference")
     others = [night(o, f"night {k + 2}") for k, o in enumerate(cfg.get("other", []))]
-    if not others: sys.exit("config needs at least one [[other]] night - that is what repairs come from")
+    if not others:
+        print("no [[other]] nights: only soft-mute dips found by their shape can be repaired, by\n"
+              "turning them back up - and garbled stretches cannot be found at all.  Record more nights.")
     out = cfg.get("output", {}).get("dir") or os.path.join(os.path.dirname(ref.path), "trackfix")
     os.makedirs(out, exist_ok=True)
     return ref, others, out
@@ -60,12 +62,15 @@ def cmd_verify(ref, others, out, a):
     sp, pl, pr, rj, rm, vj = paths(out)
     fixed = Night(left=pl, right=pr, name="repaired")
     ev = scan_mod.scan(fixed, others, vj, start=a.start or 0.0, end=a.end)
+    # what is left that still looks like a soft-mute - found by shape, or flagged against
+    # another night and soft-mute shaped.  Gaps between notes do not count.
     real = []
     for e in ev:
         if e["who"] != "reference" or e["kind"] != "dip" or e["ms"] > 40: continue
         X = fixed.read(e["t"] - 0.05, 0.1 + e["ms"] / 1000)
-        if repair_mod.real_dip(X, int(0.05 * SR), e["ms"]): real.append(e)
-    print(f"\nverify: {len(real)} dips still present in the repaired recording")
+        r, d = repair_mod.soft_mute_shape(X, int(0.05 * SR), e["ms"])
+        if e.get("source") == "shape" or (r >= 0.8 and d <= -20): real.append(e)
+    print(f"\nverify: {len(real)} soft-mute dips still present in the repaired recording")
     for e in real: print(f"   {tc(e['t'])}  {e['ms']:.1f} ms")
 
 
